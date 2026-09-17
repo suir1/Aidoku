@@ -1,0 +1,59 @@
+name: Build Real-ESRGAN feather test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.6"
+
+      - name: Install iOS platform
+        run: |
+          xcrun simctl list > /dev/null
+          xcodebuild -downloadPlatform iOS
+
+      - name: Compile app and tests
+        run: >-
+          xcodebuild build-for-testing
+          -scheme Aidoku
+          -configuration Debug
+          -destination 'generic/platform=iOS Simulator'
+          -skipPackagePluginValidation
+          CODE_SIGN_IDENTITY=
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGNING_ALLOWED=NO
+          OTHER_SWIFT_FLAGS='$(inherited) -DUPSCALE_FEATHER_TEST'
+
+      - name: Archive test app
+        run: >-
+          xcodebuild archive
+          -scheme Aidoku
+          -configuration Release
+          -archivePath build/AidokuFeatherTest.xcarchive
+          -skipPackagePluginValidation
+          CODE_SIGN_IDENTITY=
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGNING_ALLOWED=NO
+          APP_ID_SUFFIX=AidokuFeatherTest
+          INFOPLIST_KEY_CFBundleDisplayName='Aidoku Feather'
+          OTHER_SWIFT_FLAGS='$(inherited) -DUPSCALE_FEATHER_TEST'
+
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -R build/AidokuFeatherTest.xcarchive/Products/Applications/Aidoku.app Payload/AidokuFeather.app
+          zip -qry Aidoku-RealESRGAN-feather-band40.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aidoku-RealESRGAN-feather-band40
+          path: Aidoku-RealESRGAN-feather-band40.ipa
+          if-no-files-found: error
