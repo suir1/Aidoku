@@ -226,7 +226,6 @@ class MultiArrayModel: ImageProcessingModel {
     private func processOverlapping(_ image: CGImage) async -> CGImage? {
         let width = image.width
         let height = image.height
-        let channels = 4
         let outWidth = width * scale
         let outHeight = height * scale
         let outTileSize = blockSize * scale
@@ -240,11 +239,25 @@ class MultiArrayModel: ImageProcessingModel {
         )
         let source = expandedImage.pixels
         let shouldPreserveGrayscale = preserveGrayscale && expandedImage.isGrayscale
+        let channels = shouldPreserveGrayscale ? 1 : 4
         let sourceChannelStride = width * height
         let inputChannelStride = blockSize * blockSize
         guard let input = try? MLMultiArray(shape: shape, dataType: .float32) else {
             LogManager.logger.error("Failed to allocate input for multiarray model")
             return nil
+        }
+        let predictionOptions = MLPredictionOptions()
+        if #available(iOS 16.0, *),
+            let outputConstraint = mlmodel.modelDescription
+                .outputDescriptionsByName[outputName]?
+                .multiArrayConstraint,
+            outputConstraint.dataType == .float32,
+            let outputBacking = try? MLMultiArray(
+                shape: outputConstraint.shape,
+                dataType: outputConstraint.dataType
+            )
+        {
+            predictionOptions.outputBackings = [outputName: outputBacking]
         }
 
         let inputPointer = input.dataPointer.assumingMemoryBound(to: Float32.self)
@@ -252,6 +265,12 @@ class MultiArrayModel: ImageProcessingModel {
         var imageData = [UInt8](repeating: 0, count: outWidth * outHeight * channels)
         let predictionChannelStride = outTileSize * outTileSize
         var channelData = [UInt8](repeating: 0, count: predictionChannelStride)
+        var greenData = shouldPreserveGrayscale
+            ? [UInt8](repeating: 0, count: predictionChannelStride)
+            : []
+        var blueData = shouldPreserveGrayscale
+            ? [UInt8](repeating: 0, count: predictionChannelStride)
+            : []
         var multiplied = [Float32](repeating: 0, count: predictionChannelStride)
         var clipped = [Float32](repeating: 0, count: predictionChannelStride)
 
@@ -284,7 +303,8 @@ class MultiArrayModel: ImageProcessingModel {
                     guard let output = try mlmodel.prediction(
                         inputName: inputName,
                         outputName: outputName,
-                        input: input
+                        input: input,
+                        options: predictionOptions
                     ) else {
                         LogManager.logger.error("Multiarray model returned no output")
                         return nil
@@ -302,22 +322,39 @@ class MultiArrayModel: ImageProcessingModel {
                 }
                 let predictionPointer = prediction.dataPointer.assumingMemoryBound(to: Float32.self)
 
-                for channel in 0..<3 {
+                if shouldPreserveGrayscale {
                     normalizeAccelerate(
-                        predictionPointer.advanced(by: channel * predictionChannelStride),
+                        predictionPointer,
                         &channelData,
                         count: predictionChannelStride,
                         multiplied: &multiplied,
                         clipped: &clipped
                     )
-
+                    normalizeAccelerate(
+                        predictionPointer.advanced(by: predictionChannelStride),
+                        &greenData,
+                        count: predictionChannelStride,
+                        multiplied: &multiplied,
+                        clipped: &clipped
+                    )
+                    normalizeAccelerate(
+                        predictionPointer.advanced(by: predictionChannelStride * 2),
+                        &blueData,
+                        count: predictionChannelStride,
+                        multiplied: &multiplied,
+                        clipped: &clipped
+                    )
                     for outputY in 0..<outputHeight {
                         let sourceRow = outputY * outTileSize
                         let destinationRow = outputY * outWidth
                         for outputX in 0..<outputWidth {
                             let destinationX = originX * scale + outputX
-                            let destinationIndex = (destinationRow + destinationX) * channels + channel
-                            let value = channelData[sourceRow + outputX]
+                            let destinationIndex = destinationRow + destinationX
+                            let sourceIndex = sourceRow + outputX
+                            let red = Int(channelData[sourceIndex])
+                            let green = Int(greenData[sourceIndex])
+                            let blue = Int(blueData[sourceIndex])
+                            let value = UInt8((54 * red + 183 * green + 19 * blue + 128) >> 8)
                             if columnIndex > 0 && outputX < outOverlap {
                                 let weight = ramp[outputX]
                                 let previous = Float(rowData[destinationIndex])
@@ -326,6 +363,35 @@ class MultiArrayModel: ImageProcessingModel {
                                 )
                             } else {
                                 rowData[destinationIndex] = value
+                            }
+                        }
+                    }
+                } else {
+                    for channel in 0..<3 {
+                        normalizeAccelerate(
+                            predictionPointer.advanced(by: channel * predictionChannelStride),
+                            &channelData,
+                            count: predictionChannelStride,
+                            multiplied: &multiplied,
+                            clipped: &clipped
+                        )
+
+                        for outputY in 0..<outputHeight {
+                            let sourceRow = outputY * outTileSize
+                            let destinationRow = outputY * outWidth
+                            for outputX in 0..<outputWidth {
+                                let destinationX = originX * scale + outputX
+                                let destinationIndex = (destinationRow + destinationX) * channels + channel
+                                let value = channelData[sourceRow + outputX]
+                                if columnIndex > 0 && outputX < outOverlap {
+                                    let weight = ramp[outputX]
+                                    let previous = Float(rowData[destinationIndex])
+                                    rowData[destinationIndex] = UInt8(
+                                        (previous * (1 - weight) + Float(value) * weight).rounded()
+                                    )
+                                } else {
+                                    rowData[destinationIndex] = value
+                                }
                             }
                         }
                     }
@@ -339,13 +405,24 @@ class MultiArrayModel: ImageProcessingModel {
                 let imageDestinationOffset = destinationY * outWidth * channels
                 if rowIndex > 0 && outputY < outOverlap {
                     let weight = ramp[outputY]
-                    for offset in 0..<(outWidth * channels) where offset % channels != 3 {
-                        let destinationIndex = imageDestinationOffset + offset
-                        let previous = Float(imageData[destinationIndex])
-                        let value = Float(rowData[rowSourceOffset + offset])
-                        imageData[destinationIndex] = UInt8(
-                            (previous * (1 - weight) + value * weight).rounded()
-                        )
+                    if shouldPreserveGrayscale {
+                        for offset in 0..<outWidth {
+                            let destinationIndex = imageDestinationOffset + offset
+                            let previous = Float(imageData[destinationIndex])
+                            let value = Float(rowData[rowSourceOffset + offset])
+                            imageData[destinationIndex] = UInt8(
+                                (previous * (1 - weight) + value * weight).rounded()
+                            )
+                        }
+                    } else {
+                        for offset in 0..<(outWidth * channels) where offset % channels != 3 {
+                            let destinationIndex = imageDestinationOffset + offset
+                            let previous = Float(imageData[destinationIndex])
+                            let value = Float(rowData[rowSourceOffset + offset])
+                            imageData[destinationIndex] = UInt8(
+                                (previous * (1 - weight) + value * weight).rounded()
+                            )
+                        }
                     }
                 } else {
                     imageData.replaceSubrange(
@@ -356,18 +433,18 @@ class MultiArrayModel: ImageProcessingModel {
             }
         }
 
-        if shouldPreserveGrayscale {
-            applyGrayscale(to: &imageData)
-        }
-
         guard
             let buffer = CFDataCreate(nil, &imageData, imageData.count),
             let dataProvider = CGDataProvider(data: buffer)
         else {
             return nil
         }
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
+        let colorSpace = shouldPreserveGrayscale
+            ? CGColorSpaceCreateDeviceGray()
+            : CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = shouldPreserveGrayscale
+            ? CGImageAlphaInfo.none.rawValue
+            : CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
         return CGImage(
             width: outWidth,
             height: outHeight,
@@ -477,9 +554,14 @@ private class MLInput: MLFeatureProvider {
 }
 
 private extension MLModel {
-    func prediction(inputName: String, outputName: String, input: MLMultiArray) throws -> MLMultiArray? {
+    func prediction(
+        inputName: String,
+        outputName: String,
+        input: MLMultiArray,
+        options: MLPredictionOptions = MLPredictionOptions()
+    ) throws -> MLMultiArray? {
         let inputProvider = MLInput(name: inputName, input: input)
-        let outFeatures = try self.prediction(from: inputProvider)
+        let outFeatures = try self.prediction(from: inputProvider, options: options)
         return outFeatures.featureValue(for: outputName)?.multiArrayValue
     }
 }
@@ -522,11 +604,62 @@ private extension CGImage {
         let mainOffsetY = shrinkSize
 
         var arr = [Float](repeating: 0, count: 3 * exwidth * exheight)
+        var grayscalePixelCount = 0
+
+        // Models without a shrink border can be decoded directly into the
+        // final planar buffer instead of allocating six full-size temporaries.
+        if shrinkSize == 0 {
+            u8Array.withUnsafeBufferPointer { sourceBuffer in
+                guard let source = sourceBuffer.baseAddress else { return }
+                if detectGrayscale {
+                    for offset in stride(from: 0, to: u8Array.count, by: 4) {
+                        let red = Int(source[offset])
+                        let green = Int(source[offset + 1])
+                        let blue = Int(source[offset + 2])
+                        if max(red, max(green, blue)) - min(red, min(green, blue)) <= 2 {
+                            grayscalePixelCount += 1
+                        }
+                    }
+                }
+
+                var scale: Float = 1 / 255
+                var eta = clipEta8
+                let pixelCount = width * height
+                arr.withUnsafeMutableBufferPointer { destinationBuffer in
+                    guard let destination = destinationBuffer.baseAddress else { return }
+                    for channel in 0..<3 {
+                        let plane = destination.advanced(by: channel * pixelCount)
+                        vDSP_vfltu8(
+                            source.advanced(by: channel),
+                            4,
+                            plane,
+                            1,
+                            vDSP_Length(pixelCount)
+                        )
+                        vDSP_vsmsa(
+                            plane,
+                            1,
+                            &scale,
+                            &eta,
+                            plane,
+                            1,
+                            vDSP_Length(pixelCount)
+                        )
+                    }
+                }
+            }
+
+            let totalPixels = width * height
+            let requiredGrayscalePixels = totalPixels - totalPixels / 1000
+            return (
+                pixels: arr,
+                isGrayscale: detectGrayscale && grayscalePixelCount >= requiredGrayscalePixels
+            )
+        }
 
         var rArr = [Float](repeating: 0, count: mainW * mainH)
         var gArr = [Float](repeating: 0, count: mainW * mainH)
         var bArr = [Float](repeating: 0, count: mainW * mainH)
-        var grayscalePixelCount = 0
 
         u8Array.withUnsafeBufferPointer { buf in
             guard let src = buf.baseAddress else { return }
