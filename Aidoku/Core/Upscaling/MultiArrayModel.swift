@@ -23,6 +23,7 @@ class MultiArrayModel: ImageProcessingModel {
     private let shrinkSize: Int
     private let scale: Int
     private let tileOverlap: Int
+    private let preserveGrayscale: Bool
 
     required init(model: MLModel, config: [String: Any]) {
         self.mlmodel = model
@@ -31,6 +32,7 @@ class MultiArrayModel: ImageProcessingModel {
         self.blockSize = (config["blockSize"] as? Int) ?? 256
         self.shrinkSize = (config["shrinkSize"] as? Int) ?? 0
         self.scale = (config["scale"] as? Int) ?? 2
+        self.preserveGrayscale = (config["preserveGrayscale"] as? Bool) ?? false
         let tileOverlap = (config["tileOverlap"] as? Int) ?? 0
         // prevent more than two tiles from overlapping at once
         self.tileOverlap = min(max(0, tileOverlap), max(0, self.blockSize / 2))
@@ -83,7 +85,12 @@ class MultiArrayModel: ImageProcessingModel {
         // expand image by the shrink size
         let expwidth = Int(image.width) + 2 * shrinkSize
         let expheight = Int(image.height) + 2 * shrinkSize
-        let expanded = image.expand(shrinkSize: shrinkSize)
+        let expandedImage = image.expand(
+            shrinkSize: shrinkSize,
+            detectGrayscale: preserveGrayscale
+        )
+        let expanded = expandedImage.pixels
+        let shouldPreserveGrayscale = preserveGrayscale && expandedImage.isGrayscale
 
         // calculate image block rects
         let rects = calculateRects(width: width, height: height, blockSize: blockSize)
@@ -187,6 +194,10 @@ class MultiArrayModel: ImageProcessingModel {
             }
         }
 
+        if shouldPreserveGrayscale {
+            applyGrayscale(to: &imgData)
+        }
+
         // create final cgimage from imgData buffer
         guard
             let cfbuffer = CFDataCreate(nil, &imgData, outWidth * outHeight * channels),
@@ -223,7 +234,12 @@ class MultiArrayModel: ImageProcessingModel {
         let xStarts = tileStarts(for: width)
         let yStarts = tileStarts(for: height)
 
-        let source = image.expand(shrinkSize: 0)
+        let expandedImage = image.expand(
+            shrinkSize: 0,
+            detectGrayscale: preserveGrayscale
+        )
+        let source = expandedImage.pixels
+        let shouldPreserveGrayscale = preserveGrayscale && expandedImage.isGrayscale
         let sourceChannelStride = width * height
         let inputChannelStride = blockSize * blockSize
         guard let input = try? MLMultiArray(shape: shape, dataType: .float32) else {
@@ -340,6 +356,10 @@ class MultiArrayModel: ImageProcessingModel {
             }
         }
 
+        if shouldPreserveGrayscale {
+            applyGrayscale(to: &imageData)
+        }
+
         guard
             let buffer = CFDataCreate(nil, &imageData, imageData.count),
             let dataProvider = CGDataProvider(data: buffer)
@@ -376,6 +396,18 @@ class MultiArrayModel: ImageProcessingModel {
         vDSP_vsmul(source, 1, &scale, &multiplied, 1, vDSP_Length(count))
         vDSP_vclip(&multiplied, 1, &minimum, &maximum, &clipped, 1, vDSP_Length(count))
         vDSP_vfixu8(&clipped, 1, destination, 1, vDSP_Length(count))
+    }
+
+    private func applyGrayscale(to imageData: inout [UInt8]) {
+        for offset in stride(from: 0, to: imageData.count, by: 4) {
+            let red = Int(imageData[offset])
+            let green = Int(imageData[offset + 1])
+            let blue = Int(imageData[offset + 2])
+            let luminance = UInt8((54 * red + 183 * green + 19 * blue + 128) >> 8)
+            imageData[offset] = luminance
+            imageData[offset + 1] = luminance
+            imageData[offset + 2] = luminance
+        }
     }
 
     private func tileStarts(for length: Int) -> [Int] {
@@ -454,7 +486,7 @@ private extension MLModel {
 
 private extension CGImage {
     // expands image by shrinkSize and returns rgb float array
-    func expand(shrinkSize: Int) -> [Float] {
+    func expand(shrinkSize: Int, detectGrayscale: Bool) -> (pixels: [Float], isGrayscale: Bool) {
         let clipEta8: Float = 0.00196078411
 
         let exwidth = width + 2 * shrinkSize
@@ -494,9 +526,20 @@ private extension CGImage {
         var rArr = [Float](repeating: 0, count: mainW * mainH)
         var gArr = [Float](repeating: 0, count: mainW * mainH)
         var bArr = [Float](repeating: 0, count: mainW * mainH)
+        var grayscalePixelCount = 0
 
         u8Array.withUnsafeBufferPointer { buf in
             guard let src = buf.baseAddress else { return }
+            if detectGrayscale {
+                for offset in stride(from: 0, to: u8Array.count, by: 4) {
+                    let red = Int(src[offset])
+                    let green = Int(src[offset + 1])
+                    let blue = Int(src[offset + 2])
+                    if max(red, max(green, blue)) - min(red, min(green, blue)) <= 2 {
+                        grayscalePixelCount += 1
+                    }
+                }
+            }
             var scale: Float = 1 / 255
             var eta = clipEta8
             // red
@@ -671,6 +714,11 @@ private extension CGImage {
             )
         }
 
-        return arr
+        let totalPixels = width * height
+        let requiredGrayscalePixels = totalPixels - totalPixels / 1000
+        return (
+            pixels: arr,
+            isGrayscale: detectGrayscale && grayscalePixelCount >= requiredGrayscalePixels
+        )
     }
 }
