@@ -826,7 +826,9 @@ private extension CGImage {
 }
 
 private func isNearlyGrayscale(_ pixels: [UInt8]) -> Bool {
-    let maximumColorPixels = pixels.count / 4 / 1000
+    // Manga pages may contain small colored watermarks or compression noise.
+    // Allow up to 1% such pixels before treating the page as genuinely colored.
+    let maximumColorPixels = pixels.count / 4 / 100
     var colorPixelCount = 0
 
     for offset in stride(from: 0, to: pixels.count, by: 4) {
