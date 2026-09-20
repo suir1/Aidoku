@@ -240,6 +240,7 @@ class MultiArrayModel: ImageProcessingModel {
         let source = expandedImage.pixels
         let shouldPreserveGrayscale = preserveGrayscale && expandedImage.isGrayscale
         let channels = shouldPreserveGrayscale ? 1 : 4
+        let colorComponents = shouldPreserveGrayscale ? 1 : 3
         let sourceChannelStride = width * height
         let inputChannelStride = blockSize * blockSize
         guard let input = try? MLMultiArray(shape: shape, dataType: .float32) else {
@@ -275,8 +276,6 @@ class MultiArrayModel: ImageProcessingModel {
         var clipped = [Float32](repeating: 0, count: predictionChannelStride)
 
         for (rowIndex, originY) in yStarts.enumerated() {
-            if Task.isCancelled { return nil }
-
             let inputHeight = min(blockSize, height - originY)
             let outputHeight = inputHeight * scale
             var rowData = [UInt8](repeating: 0, count: outWidth * outputHeight * channels)
@@ -357,9 +356,10 @@ class MultiArrayModel: ImageProcessingModel {
                             let value = UInt8((54 * red + 183 * green + 19 * blue + 128) >> 8)
                             if columnIndex > 0 && outputX < outOverlap {
                                 let weight = ramp[outputX]
-                                let previous = Float(rowData[destinationIndex])
-                                rowData[destinationIndex] = UInt8(
-                                    (previous * (1 - weight) + Float(value) * weight).rounded()
+                                rowData[destinationIndex] = blend(
+                                    rowData[destinationIndex],
+                                    with: value,
+                                    weight: weight
                                 )
                             } else {
                                 rowData[destinationIndex] = value
@@ -385,9 +385,10 @@ class MultiArrayModel: ImageProcessingModel {
                                 let value = channelData[sourceRow + outputX]
                                 if columnIndex > 0 && outputX < outOverlap {
                                     let weight = ramp[outputX]
-                                    let previous = Float(rowData[destinationIndex])
-                                    rowData[destinationIndex] = UInt8(
-                                        (previous * (1 - weight) + Float(value) * weight).rounded()
+                                    rowData[destinationIndex] = blend(
+                                        rowData[destinationIndex],
+                                        with: value,
+                                        weight: weight
                                     )
                                 } else {
                                     rowData[destinationIndex] = value
@@ -405,22 +406,16 @@ class MultiArrayModel: ImageProcessingModel {
                 let imageDestinationOffset = destinationY * outWidth * channels
                 if rowIndex > 0 && outputY < outOverlap {
                     let weight = ramp[outputY]
-                    if shouldPreserveGrayscale {
-                        for offset in 0..<outWidth {
-                            let destinationIndex = imageDestinationOffset + offset
-                            let previous = Float(imageData[destinationIndex])
-                            let value = Float(rowData[rowSourceOffset + offset])
-                            imageData[destinationIndex] = UInt8(
-                                (previous * (1 - weight) + value * weight).rounded()
-                            )
-                        }
-                    } else {
-                        for offset in 0..<(outWidth * channels) where offset % channels != 3 {
-                            let destinationIndex = imageDestinationOffset + offset
-                            let previous = Float(imageData[destinationIndex])
-                            let value = Float(rowData[rowSourceOffset + offset])
-                            imageData[destinationIndex] = UInt8(
-                                (previous * (1 - weight) + value * weight).rounded()
+                    for pixel in 0..<outWidth {
+                        let sourcePixel = rowSourceOffset + pixel * channels
+                        let destinationPixel = imageDestinationOffset + pixel * channels
+                        for component in 0..<colorComponents {
+                            let sourceIndex = sourcePixel + component
+                            let destinationIndex = destinationPixel + component
+                            imageData[destinationIndex] = blend(
+                                imageData[destinationIndex],
+                                with: rowData[sourceIndex],
+                                weight: weight
                             )
                         }
                     }
@@ -458,6 +453,11 @@ class MultiArrayModel: ImageProcessingModel {
             shouldInterpolate: true,
             intent: CGColorRenderingIntent.defaultIntent
         )
+    }
+
+    @inline(__always)
+    private func blend(_ previous: UInt8, with value: UInt8, weight: Float) -> UInt8 {
+        UInt8((Float(previous) * (1 - weight) + Float(value) * weight).rounded())
     }
 
     private func normalizeAccelerate(
@@ -604,24 +604,13 @@ private extension CGImage {
         let mainOffsetY = shrinkSize
 
         var arr = [Float](repeating: 0, count: 3 * exwidth * exheight)
-        var grayscalePixelCount = 0
+        let isGrayscale = detectGrayscale && isNearlyGrayscale(u8Array)
 
         // Models without a shrink border can be decoded directly into the
         // final planar buffer instead of allocating six full-size temporaries.
         if shrinkSize == 0 {
             u8Array.withUnsafeBufferPointer { sourceBuffer in
                 guard let source = sourceBuffer.baseAddress else { return }
-                if detectGrayscale {
-                    for offset in stride(from: 0, to: u8Array.count, by: 4) {
-                        let red = Int(source[offset])
-                        let green = Int(source[offset + 1])
-                        let blue = Int(source[offset + 2])
-                        if max(red, max(green, blue)) - min(red, min(green, blue)) <= 2 {
-                            grayscalePixelCount += 1
-                        }
-                    }
-                }
-
                 var scale: Float = 1 / 255
                 var eta = clipEta8
                 let pixelCount = width * height
@@ -649,12 +638,7 @@ private extension CGImage {
                 }
             }
 
-            let totalPixels = width * height
-            let requiredGrayscalePixels = totalPixels - totalPixels / 1000
-            return (
-                pixels: arr,
-                isGrayscale: detectGrayscale && grayscalePixelCount >= requiredGrayscalePixels
-            )
+            return (pixels: arr, isGrayscale: isGrayscale)
         }
 
         var rArr = [Float](repeating: 0, count: mainW * mainH)
@@ -663,16 +647,6 @@ private extension CGImage {
 
         u8Array.withUnsafeBufferPointer { buf in
             guard let src = buf.baseAddress else { return }
-            if detectGrayscale {
-                for offset in stride(from: 0, to: u8Array.count, by: 4) {
-                    let red = Int(src[offset])
-                    let green = Int(src[offset + 1])
-                    let blue = Int(src[offset + 2])
-                    if max(red, max(green, blue)) - min(red, min(green, blue)) <= 2 {
-                        grayscalePixelCount += 1
-                    }
-                }
-            }
             var scale: Float = 1 / 255
             var eta = clipEta8
             // red
@@ -847,11 +821,24 @@ private extension CGImage {
             )
         }
 
-        let totalPixels = width * height
-        let requiredGrayscalePixels = totalPixels - totalPixels / 1000
-        return (
-            pixels: arr,
-            isGrayscale: detectGrayscale && grayscalePixelCount >= requiredGrayscalePixels
-        )
+        return (pixels: arr, isGrayscale: isGrayscale)
     }
+}
+
+private func isNearlyGrayscale(_ pixels: [UInt8]) -> Bool {
+    let maximumColorPixels = pixels.count / 4 / 1000
+    var colorPixelCount = 0
+
+    for offset in stride(from: 0, to: pixels.count, by: 4) {
+        let red = Int(pixels[offset])
+        let green = Int(pixels[offset + 1])
+        let blue = Int(pixels[offset + 2])
+        if max(red, max(green, blue)) - min(red, min(green, blue)) > 2 {
+            colorPixelCount += 1
+            if colorPixelCount > maximumColorPixels {
+                return false
+            }
+        }
+    }
+    return true
 }
