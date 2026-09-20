@@ -25,7 +25,9 @@ struct ModelInfo: Codable {
 actor ModelManager {
     static let shared = ModelManager()
 
-    static private let modelListUrl = URL(string: "http://upscale.aidoku.app/models.json")!
+    static private let modelListUrl = URL(
+        string: "https://raw.githubusercontent.com/suir1/upscale/experiment/realcugan-local/local-models/models.json"
+    )!
     static private let supportedModelTypes: Set<String> = ["multiarray", "image"]
 
     private var imageModelCache: [String: ImageProcessingModel] = [:]
