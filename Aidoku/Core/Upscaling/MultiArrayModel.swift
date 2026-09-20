@@ -90,7 +90,6 @@ class MultiArrayModel: ImageProcessingModel {
             detectGrayscale: preserveGrayscale
         )
         let expanded = expandedImage.pixels
-        let shouldPreserveGrayscale = preserveGrayscale && expandedImage.isGrayscale
 
         // calculate image block rects
         let rects = calculateRects(width: width, height: height, blockSize: blockSize)
@@ -194,7 +193,7 @@ class MultiArrayModel: ImageProcessingModel {
             }
         }
 
-        if shouldPreserveGrayscale {
+        if preserveGrayscale && expandedImage.isGrayscale {
             applyGrayscale(to: &imgData)
         }
 
@@ -239,7 +238,6 @@ class MultiArrayModel: ImageProcessingModel {
             detectGrayscale: preserveGrayscale
         )
         let source = expandedImage.pixels
-        let shouldPreserveGrayscale = preserveGrayscale && expandedImage.isGrayscale
         let sourceChannelStride = width * height
         let inputChannelStride = blockSize * blockSize
         guard let input = try? MLMultiArray(shape: shape, dataType: .float32) else {
@@ -256,10 +254,7 @@ class MultiArrayModel: ImageProcessingModel {
         var clipped = [Float32](repeating: 0, count: predictionChannelStride)
 
         for (rowIndex, originY) in yStarts.enumerated() {
-            if Task.isCancelled { return nil }
-
-            let inputHeight = min(blockSize, height - originY)
-            let outputHeight = inputHeight * scale
+            let outputHeight = min(blockSize, height - originY) * scale
             var rowData = [UInt8](repeating: 0, count: outWidth * outputHeight * channels)
 
             for (columnIndex, originX) in xStarts.enumerated() {
@@ -332,11 +327,9 @@ class MultiArrayModel: ImageProcessingModel {
                 }
             }
 
-            let destinationOriginY = originY * scale
             for outputY in 0..<outputHeight {
-                let destinationY = destinationOriginY + outputY
                 let rowSourceOffset = outputY * outWidth * channels
-                let imageDestinationOffset = destinationY * outWidth * channels
+                let imageDestinationOffset = (originY * scale + outputY) * outWidth * channels
                 if rowIndex > 0 && outputY < outOverlap {
                     let weight = ramp[outputY]
                     for offset in 0..<(outWidth * channels) where offset % channels != 3 {
@@ -356,7 +349,7 @@ class MultiArrayModel: ImageProcessingModel {
             }
         }
 
-        if shouldPreserveGrayscale {
+        if preserveGrayscale && expandedImage.isGrayscale {
             applyGrayscale(to: &imageData)
         }
 
