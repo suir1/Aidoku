@@ -32,7 +32,8 @@ class MultiArrayModel: ImageProcessingModel {
         self.blockSize = (config["blockSize"] as? Int) ?? 256
         self.shrinkSize = (config["shrinkSize"] as? Int) ?? 0
         self.scale = (config["scale"] as? Int) ?? 2
-        self.preserveGrayscale = (config["preserveGrayscale"] as? Bool) ?? false
+        // Keep grayscale protection enabled for older metadata without this key.
+        self.preserveGrayscale = (config["preserveGrayscale"] as? Bool) ?? true
         let tileOverlap = (config["tileOverlap"] as? Int) ?? 0
         // prevent more than two tiles from overlapping at once
         self.tileOverlap = min(max(0, tileOverlap), max(0, self.blockSize / 2))
