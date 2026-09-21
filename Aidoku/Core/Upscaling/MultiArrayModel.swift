@@ -31,7 +31,8 @@ class MultiArrayModel: ImageProcessingModel {
         self.blockSize = (config["blockSize"] as? Int) ?? 256
         self.shrinkSize = (config["shrinkSize"] as? Int) ?? 0
         self.scale = (config["scale"] as? Int) ?? 2
-        self.preserveGrayscale = (config["preserveGrayscale"] as? Bool) ?? false
+        // Keep grayscale protection enabled for older metadata without this key.
+        self.preserveGrayscale = (config["preserveGrayscale"] as? Bool) ?? true
         if let customShape = config["shape"] as? [Int] {
             self.shape = customShape.map { NSNumber(value: $0) }
         } else {
