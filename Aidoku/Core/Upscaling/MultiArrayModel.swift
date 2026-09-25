@@ -372,11 +372,11 @@ class MultiArrayModel: ImageProcessingModel {
                         let green: UInt8
                         let blue: UInt8
                         if preserveGrayscale && grayscaleMask[maskRow + inputX] != 0 {
-                            let luma = UInt8(
-                                (54 * Int(channelData[sourceIndex]) +
-                                    183 * Int(greenData[sourceIndex]) +
-                                    19 * Int(blueData[sourceIndex]) + 128) >> 8
-                            )
+                            let redValue = Int(channelData[sourceIndex])
+                            let greenValue = Int(greenData[sourceIndex])
+                            let blueValue = Int(blueData[sourceIndex])
+                            let lumaValue = (54 * redValue + 183 * greenValue + 19 * blueValue + 128) >> 8
+                            let luma = UInt8(lumaValue)
                             red = luma
                             green = luma
                             blue = luma
