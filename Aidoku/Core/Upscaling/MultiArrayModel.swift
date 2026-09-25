@@ -237,14 +237,13 @@ class MultiArrayModel: ImageProcessingModel {
 
         let expandedImage = image.expand(
             shrinkSize: 0,
-            detectGrayscale: preserveGrayscale
+            detectGrayscale: false
         )
         let source = expandedImage.pixels
-        let shouldPreserveGrayscale = preserveGrayscale && expandedImage.isGrayscale
-        let channels = shouldPreserveGrayscale ? 1 : 4
-        let colorComponents = shouldPreserveGrayscale ? 1 : 3
+        let channels = 4
         let sourceChannelStride = width * height
         let inputChannelStride = blockSize * blockSize
+        let grayscaleTolerance = Float(2) / 255
         guard let input = try? MLMultiArray(shape: shape, dataType: .float32) else {
             LogManager.logger.error("Failed to allocate input for multiarray model")
             return nil
@@ -268,12 +267,9 @@ class MultiArrayModel: ImageProcessingModel {
         var imageData = [UInt8](repeating: 0, count: outWidth * outHeight * channels)
         let predictionChannelStride = outTileSize * outTileSize
         var channelData = [UInt8](repeating: 0, count: predictionChannelStride)
-        var greenData = shouldPreserveGrayscale
-            ? [UInt8](repeating: 0, count: predictionChannelStride)
-            : []
-        var blueData = shouldPreserveGrayscale
-            ? [UInt8](repeating: 0, count: predictionChannelStride)
-            : []
+        var greenData = [UInt8](repeating: 0, count: predictionChannelStride)
+        var blueData = [UInt8](repeating: 0, count: predictionChannelStride)
+        var grayscaleMask = [UInt8](repeating: 0, count: inputChannelStride)
         var multiplied = [Float32](repeating: 0, count: predictionChannelStride)
         var clipped = [Float32](repeating: 0, count: predictionChannelStride)
 
@@ -295,6 +291,24 @@ class MultiArrayModel: ImageProcessingModel {
                             inputPointer[inputOffset + inputY * blockSize + inputX] = Float32(
                                 source[sourceOffset + sourceY * width + sourceX]
                             )
+                        }
+                    }
+                }
+
+                if preserveGrayscale {
+                    for inputY in 0..<blockSize {
+                        let sourceY = min(originY + inputY, height - 1)
+                        for inputX in 0..<blockSize {
+                            let sourceX = min(originX + inputX, width - 1)
+                            let sourceIndex = sourceY * width + sourceX
+                            let red = source[sourceIndex]
+                            let green = source[sourceChannelStride + sourceIndex]
+                            let blue = source[sourceChannelStride * 2 + sourceIndex]
+                            let isGrayscale =
+                                abs(red - green) <= grayscaleTolerance &&
+                                abs(red - blue) <= grayscaleTolerance &&
+                                abs(green - blue) <= grayscaleTolerance
+                            grayscaleMask[inputY * blockSize + inputX] = isGrayscale ? 1 : 0
                         }
                     }
                 }
@@ -323,79 +337,75 @@ class MultiArrayModel: ImageProcessingModel {
                 }
                 let predictionPointer = prediction.dataPointer.assumingMemoryBound(to: Float32.self)
 
-                if shouldPreserveGrayscale {
-                    normalizeAccelerate(
-                        predictionPointer,
-                        &channelData,
-                        count: predictionChannelStride,
-                        multiplied: &multiplied,
-                        clipped: &clipped
-                    )
-                    normalizeAccelerate(
-                        predictionPointer.advanced(by: predictionChannelStride),
-                        &greenData,
-                        count: predictionChannelStride,
-                        multiplied: &multiplied,
-                        clipped: &clipped
-                    )
-                    normalizeAccelerate(
-                        predictionPointer.advanced(by: predictionChannelStride * 2),
-                        &blueData,
-                        count: predictionChannelStride,
-                        multiplied: &multiplied,
-                        clipped: &clipped
-                    )
-                    for outputY in 0..<outputHeight {
-                        let sourceRow = outputY * outTileSize
-                        let destinationRow = outputY * outWidth
-                        for outputX in 0..<outputWidth {
-                            let destinationX = originX * scale + outputX
-                            let destinationIndex = destinationRow + destinationX
-                            let sourceIndex = sourceRow + outputX
-                            let red = Int(channelData[sourceIndex])
-                            let green = Int(greenData[sourceIndex])
-                            let blue = Int(blueData[sourceIndex])
-                            let value = UInt8((54 * red + 183 * green + 19 * blue + 128) >> 8)
-                            if columnIndex > 0 && outputX < outOverlap {
-                                let weight = ramp[outputX]
-                                rowData[destinationIndex] = blend(
-                                    rowData[destinationIndex],
-                                    with: value,
-                                    weight: weight
-                                )
-                            } else {
-                                rowData[destinationIndex] = value
-                            }
-                        }
-                    }
-                } else {
-                    for channel in 0..<3 {
-                        normalizeAccelerate(
-                            predictionPointer.advanced(by: channel * predictionChannelStride),
-                            &channelData,
-                            count: predictionChannelStride,
-                            multiplied: &multiplied,
-                            clipped: &clipped
-                        )
+                normalizeAccelerate(
+                    predictionPointer,
+                    &channelData,
+                    count: predictionChannelStride,
+                    multiplied: &multiplied,
+                    clipped: &clipped
+                )
+                normalizeAccelerate(
+                    predictionPointer.advanced(by: predictionChannelStride),
+                    &greenData,
+                    count: predictionChannelStride,
+                    multiplied: &multiplied,
+                    clipped: &clipped
+                )
+                normalizeAccelerate(
+                    predictionPointer.advanced(by: predictionChannelStride * 2),
+                    &blueData,
+                    count: predictionChannelStride,
+                    multiplied: &multiplied,
+                    clipped: &clipped
+                )
 
-                        for outputY in 0..<outputHeight {
-                            let sourceRow = outputY * outTileSize
-                            let destinationRow = outputY * outWidth
-                            for outputX in 0..<outputWidth {
-                                let destinationX = originX * scale + outputX
-                                let destinationIndex = (destinationRow + destinationX) * channels + channel
-                                let value = channelData[sourceRow + outputX]
-                                if columnIndex > 0 && outputX < outOverlap {
-                                    let weight = ramp[outputX]
-                                    rowData[destinationIndex] = blend(
-                                        rowData[destinationIndex],
-                                        with: value,
-                                        weight: weight
-                                    )
-                                } else {
-                                    rowData[destinationIndex] = value
-                                }
-                            }
+                for outputY in 0..<outputHeight {
+                    let sourceRow = outputY * outTileSize
+                    let destinationRow = outputY * outWidth
+                    let maskRow = min(outputY / scale, blockSize - 1) * blockSize
+                    for outputX in 0..<outputWidth {
+                        let destinationX = originX * scale + outputX
+                        let destinationIndex = (destinationRow + destinationX) * channels
+                        let sourceIndex = sourceRow + outputX
+                        let inputX = min(outputX / scale, blockSize - 1)
+                        let red: UInt8
+                        let green: UInt8
+                        let blue: UInt8
+                        if preserveGrayscale && grayscaleMask[maskRow + inputX] != 0 {
+                            let luma = UInt8(
+                                (54 * Int(channelData[sourceIndex]) +
+                                    183 * Int(greenData[sourceIndex]) +
+                                    19 * Int(blueData[sourceIndex]) + 128) >> 8
+                            )
+                            red = luma
+                            green = luma
+                            blue = luma
+                        } else {
+                            red = channelData[sourceIndex]
+                            green = greenData[sourceIndex]
+                            blue = blueData[sourceIndex]
+                        }
+                        if columnIndex > 0 && outputX < outOverlap {
+                            let weight = ramp[outputX]
+                            rowData[destinationIndex] = blend(
+                                rowData[destinationIndex],
+                                with: red,
+                                weight: weight
+                            )
+                            rowData[destinationIndex + 1] = blend(
+                                rowData[destinationIndex + 1],
+                                with: green,
+                                weight: weight
+                            )
+                            rowData[destinationIndex + 2] = blend(
+                                rowData[destinationIndex + 2],
+                                with: blue,
+                                weight: weight
+                            )
+                        } else {
+                            rowData[destinationIndex] = red
+                            rowData[destinationIndex + 1] = green
+                            rowData[destinationIndex + 2] = blue
                         }
                     }
                 }
@@ -411,7 +421,7 @@ class MultiArrayModel: ImageProcessingModel {
                     for pixel in 0..<outWidth {
                         let sourcePixel = rowSourceOffset + pixel * channels
                         let destinationPixel = imageDestinationOffset + pixel * channels
-                        for component in 0..<colorComponents {
+                        for component in 0..<3 {
                             let sourceIndex = sourcePixel + component
                             let destinationIndex = destinationPixel + component
                             imageData[destinationIndex] = blend(
@@ -436,12 +446,8 @@ class MultiArrayModel: ImageProcessingModel {
         else {
             return nil
         }
-        let colorSpace = shouldPreserveGrayscale
-            ? CGColorSpaceCreateDeviceGray()
-            : CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = shouldPreserveGrayscale
-            ? CGImageAlphaInfo.none.rawValue
-            : CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
         return CGImage(
             width: outWidth,
             height: outHeight,
