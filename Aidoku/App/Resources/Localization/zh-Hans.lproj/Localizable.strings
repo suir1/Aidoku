@@ -515,6 +515,7 @@
 "UPSCALE_BENCHMARK_OVERLAP" = "仅重叠羽化";
 "UPSCALE_BENCHMARK_GRAYSCALE" = "仅灰度保护";
 "UPSCALE_BENCHMARK_BOTH" = "重叠羽化 + 灰度保护";
+"UPSCALE_BENCHMARK_OVERLAP_VALUE" = "重叠大小：%d px";
 "RELOAD_FAILED_TEXT" = "图片加载失败。请重试。";
 "RELOAD_FAILED" = "重新加载失败";
 "NO_DOWNLOADS" = "无下载内容";

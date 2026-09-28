@@ -555,6 +555,7 @@
 "UPSCALE_BENCHMARK_OVERLAP" = "Overlap only";
 "UPSCALE_BENCHMARK_GRAYSCALE" = "Grayscale only";
 "UPSCALE_BENCHMARK_BOTH" = "Overlap + grayscale";
+"UPSCALE_BENCHMARK_OVERLAP_VALUE" = "Overlap: %d px";
 "ENABLED_MODEL" = "Enabled Model";
 "AVAILABLE_MODELS" = "Available Models";
 "NO_AVAILABLE_MODELS" = "No Available Models";

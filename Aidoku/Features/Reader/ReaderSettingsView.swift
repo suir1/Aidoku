@@ -23,6 +23,7 @@ struct ReaderSettingsView: View {
     @StateObject private var upscaleImages = UserDefaultsBool(key: "Reader.upscaleImages")
     @StateObject private var splitWideImages = UserDefaultsBool(key: "Reader.splitWideImages")
     @State private var upscaleBenchmarkMode: String
+    @State private var upscaleBenchmarkOverlap: Int
     @StateObject private var dictionaryLookupEnabled = UserDefaultsBool(key: AppSettings.dictionary.enable.key)
     @StateObject private var dictionaryTextOverlayModeEnabled = UserDefaultsBool(key: AppSettings.dictionary.textOverlayMode.key)
     @StateObject private var restrictOCRLanguages = UserDefaultsBool(key: AppSettings.dictionary.restrictOCRLanguages.key)
@@ -59,6 +60,11 @@ struct ReaderSettingsView: View {
         )
         self._upscaleBenchmarkMode = State(
             initialValue: UserDefaults.standard.string(forKey: "Reader.upscaleBenchmarkMode") ?? "auto"
+        )
+        self._upscaleBenchmarkOverlap = State(
+            initialValue: UserDefaults.standard.object(
+                forKey: "Reader.upscaleBenchmarkOverlap"
+            ) as? Int ?? 20
         )
     }
 
@@ -140,6 +146,24 @@ struct ReaderSettingsView: View {
                                         name: Notification.Name("Reader.upscaleBenchmarkMode"),
                                         object: nil
                                     )
+                                }
+                                if upscaleBenchmarkMode == "overlap" || upscaleBenchmarkMode == "both" {
+                                    Stepper(
+                                        String(
+                                            format: NSLocalizedString("UPSCALE_BENCHMARK_OVERLAP_VALUE"),
+                                            upscaleBenchmarkOverlap
+                                        ),
+                                        value: $upscaleBenchmarkOverlap,
+                                        in: 0...128,
+                                        step: 4
+                                    )
+                                    .onChange(of: upscaleBenchmarkOverlap) { newValue in
+                                        UserDefaults.standard.set(newValue, forKey: "Reader.upscaleBenchmarkOverlap")
+                                        NotificationCenter.default.post(
+                                            name: Notification.Name("Reader.upscaleBenchmarkOverlap"),
+                                            object: nil
+                                        )
+                                    }
                                 }
                             }
                         } header: {

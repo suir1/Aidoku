@@ -21,6 +21,12 @@ final class ReaderPagePrefetcher {
 
     /// Fetch the first `count` pages of a chapter, skipping any that were already requested.
     func prefetch(pages: [Page], count: Int, chapterKey: String, sourceKey: String) async {
+        let benchmarkMode = UserDefaults.standard.string(forKey: "Reader.upscaleBenchmarkMode") ?? "auto"
+        let isBenchmarking = UserDefaults.standard.bool(forKey: "Reader.upscaleImages")
+            && benchmarkMode != "auto"
+        guard !isBenchmarking else {
+            return
+        }
         let target = min(count, pages.count)
         let start = prefetchedCounts[chapterKey] ?? 0
         guard target > start else { return }

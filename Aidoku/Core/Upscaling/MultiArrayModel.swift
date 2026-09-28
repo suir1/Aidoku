@@ -35,6 +35,10 @@ class MultiArrayModel: ImageProcessingModel {
         switch mode {
         case "baseline", "grayscale":
             return 0
+        case "overlap", "both":
+            let overlap = UserDefaults.standard.object(forKey: "Reader.upscaleBenchmarkOverlap") as? Int
+                ?? tileOverlap
+            return min(max(0, overlap), max(0, blockSize / 2))
         default:
             return tileOverlap
         }

@@ -14,6 +14,9 @@ enum ImageProcessingSettingsKey {
         let upscale = UserDefaults.standard.bool(forKey: "Reader.upscaleImages")
         let maxHeight = UserDefaults.standard.integer(forKey: "Reader.upscaleMaxHeight")
         let benchmarkMode = UserDefaults.standard.string(forKey: "Reader.upscaleBenchmarkMode") ?? "auto"
-        return "\(crop)-\(downsample)-\(upscale)-\(maxHeight)-\(benchmarkMode)"
+        let benchmarkOverlap = UserDefaults.standard.object(
+            forKey: "Reader.upscaleBenchmarkOverlap"
+        ) as? Int ?? 20
+        return "\(crop)-\(downsample)-\(upscale)-\(maxHeight)-\(benchmarkMode)-\(benchmarkOverlap)"
     }
 }

@@ -336,6 +336,7 @@ class ReaderViewController: BaseObservingViewController {
         addObserver(forName: "Reader.downsampleImages", using: reloadBlock)
         addObserver(forName: "Reader.upscaleImages", using: reloadBlock)
         addObserver(forName: "Reader.upscaleBenchmarkMode", using: reloadBlock)
+        addObserver(forName: "Reader.upscaleBenchmarkOverlap", using: reloadBlock)
         addObserver(forName: "Reader.cropBorders", using: reloadBlock)
         addObserver(forName: "Reader.liveText", using: reloadBlock)
         addObserver(forName: AppSettings.dictionary.overlayPadding.key, using: reloadBlock)

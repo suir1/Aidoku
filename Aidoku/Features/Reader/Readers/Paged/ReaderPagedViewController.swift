@@ -45,6 +45,12 @@ class ReaderPagedViewController: BaseObservingViewController {
     private let pagePrefetcher = ReaderPagePrefetcher()
     private var nextChapterPreloadTask: Task<Void, Never>?
 
+    private var isUpscaleBenchmarking: Bool {
+        let benchmarkMode = UserDefaults.standard.string(forKey: "Reader.upscaleBenchmarkMode") ?? "auto"
+        return UserDefaults.standard.bool(forKey: "Reader.upscaleImages")
+            && benchmarkMode != "auto"
+    }
+
     // Split pages tracking
     private var actualPageIndices: [Int] = []
     private var splitPages: [Int: [Page]] = [:]
@@ -101,6 +107,10 @@ class ReaderPagedViewController: BaseObservingViewController {
         addObserver(forName: "Reader.pagesToPreload") { [weak self] notification in
             self?.pagesToPreload = notification.object as? Int
                 ?? UserDefaults.standard.integer(forKey: "Reader.pagesToPreload")
+        }
+        addObserver(forName: "Reader.upscaleBenchmarkMode") { [weak self] _ in
+            self?.nextChapterPreloadTask?.cancel()
+            self?.pagePrefetcher.reset()
         }
         addObserver(forName: UIApplication.didReceiveMemoryWarningNotification.rawValue) { [weak self] _ in
             // clear pages that aren't in the preload range if we get a memory warning
@@ -456,7 +466,7 @@ extension ReaderPagedViewController {
 
     /// Fetch the first `pageCount` pages of the next chapter ahead of time.
     func preloadNextChapter(pageCount: Int) {
-        guard pageCount > 0, let nextChapter else { return }
+        guard !isUpscaleBenchmarking, pageCount > 0, let nextChapter else { return }
 
         let previousTask = nextChapterPreloadTask
         nextChapterPreloadTask = Task { [weak self] in
@@ -994,7 +1004,7 @@ extension ReaderPagedViewController: UIPageViewControllerDelegate {
             completed,
             let viewController = pageViewController.viewControllers?.first,
             let currentIndex = getIndex(of: viewController, pos: .first),
-            pagesToPreload > 0
+            isUpscaleBenchmarking || pagesToPreload > 0
         else {
             return
         }
@@ -1008,7 +1018,7 @@ extension ReaderPagedViewController: UIPageViewControllerDelegate {
             case 0: // previous chapter transition page
                 delegate?.setCurrentPage(0, position: nil)
                 // preload previous
-                if let previousChapter = previousChapter {
+                if !isUpscaleBenchmarking, let previousChapter = previousChapter {
                     Task {
                         await viewModel.preload(chapter: previousChapter)
                         if currentIndex > 0, let lastPage = viewModel.preloadedPages.last {
@@ -1045,8 +1055,12 @@ extension ReaderPagedViewController: UIPageViewControllerDelegate {
                 } else {
                     delegate?.setCurrentPage(actualPage, position: nil)
                 }
-                // preload 1 before and pagesToPreload ahead
-                loadPages(in: page - 1 - (usesDoublePages ? 1 : 0)...page + pagesToPreload + (usesDoublePages ? 1 : 0))
+                if isUpscaleBenchmarking {
+                    loadPages(in: page...page + (usesDoublePages ? 1 : 0))
+                } else {
+                    // preload 1 before and pagesToPreload ahead
+                    loadPages(in: page - 1 - (usesDoublePages ? 1 : 0)...page + pagesToPreload + (usesDoublePages ? 1 : 0))
+                }
 
                 if
                     usesDoublePages,
