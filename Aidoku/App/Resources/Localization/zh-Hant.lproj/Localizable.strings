@@ -637,6 +637,12 @@
 "NO_RESULTS_TEXT" = "檢查拼字或嘗試重新搜尋。";
 "LEARN_MORE" = "瞭解更多…";
 "UPSCALING" = "超解析度";
+"UPSCALE_BENCHMARK_MODE" = "超解析度測試模式";
+"UPSCALE_BENCHMARK_AUTO" = "模型預設";
+"UPSCALE_BENCHMARK_BASELINE" = "基線（無重疊/灰階保護）";
+"UPSCALE_BENCHMARK_OVERLAP" = "僅重疊羽化";
+"UPSCALE_BENCHMARK_GRAYSCALE" = "僅灰階保護";
+"UPSCALE_BENCHMARK_BOTH" = "重疊羽化 + 灰階保護";
 "UPSCALE_IMAGES" = "超解析度圖片";
 "UPSCALING_MODELS" = "超解析度模型";
 "UPSCALE_MAX_IMAGE_HEIGHT" = "最大圖片高度";

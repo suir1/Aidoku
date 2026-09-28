@@ -25,6 +25,30 @@ class MultiArrayModel: ImageProcessingModel {
     private let tileOverlap: Int
     private let preserveGrayscale: Bool
 
+    private var benchmarkMode: String {
+        UserDefaults.standard.string(forKey: "Reader.upscaleBenchmarkMode") ?? "auto"
+    }
+
+    private var effectiveTileOverlap: Int {
+        switch benchmarkMode {
+        case "baseline", "grayscale":
+            return 0
+        default:
+            return tileOverlap
+        }
+    }
+
+    private var effectivePreserveGrayscale: Bool {
+        switch benchmarkMode {
+        case "baseline", "overlap":
+            return false
+        case "grayscale", "both":
+            return true
+        default:
+            return preserveGrayscale
+        }
+    }
+
     required init(model: MLModel, config: [String: Any]) {
         self.mlmodel = model
         self.inputName = (config["inputName"] as? String) ?? "input"
@@ -46,7 +70,7 @@ class MultiArrayModel: ImageProcessingModel {
     }
 
     func process(_ image: CGImage) async -> CGImage? {
-        if tileOverlap > 0 && shrinkSize == 0 {
+        if effectiveTileOverlap > 0 && shrinkSize == 0 {
             return await processOverlapping(image)
         }
 
@@ -91,7 +115,7 @@ class MultiArrayModel: ImageProcessingModel {
         let preparationStart = DispatchTime.now().uptimeNanoseconds
         let expandedImage = image.expand(
             shrinkSize: shrinkSize,
-            preserveGrayscale: preserveGrayscale
+            preserveGrayscale: effectivePreserveGrayscale
         )
         let expanded = expandedImage.pixels
         let preparationMilliseconds = Self.elapsedMilliseconds(since: preparationStart)
@@ -202,14 +226,15 @@ class MultiArrayModel: ImageProcessingModel {
         }
         let grayscaleMilliseconds = Self.elapsedMilliseconds(since: grayscaleStart)
         let snapshot = metrics.snapshot()
+        let output = makeImage(from: &imgData, width: outWidth, height: outHeight)
         LogManager.logger.info(
             "[UPSCALE-PERF] mode=independent size=\(width)x\(height) tiles=\(rects.count) "
-                + "overlap=0 grayscale=\(preserveGrayscale) preparation_ms=\(preparationMilliseconds) "
+                + "overlap=0 grayscale=\(effectivePreserveGrayscale) benchmark=\(benchmarkMode) preparation_ms=\(preparationMilliseconds) "
                 + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
                 + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart))"
         )
 
-        return makeImage(from: &imgData, width: outWidth, height: outHeight)
+        return output
     }
 
     // process overlapping tiles one row at a time to bound intermediate memory
@@ -220,14 +245,15 @@ class MultiArrayModel: ImageProcessingModel {
         let outWidth = width * scale
         let outHeight = height * scale
         let outTileSize = blockSize * scale
-        let outOverlap = tileOverlap * scale
-        let xStarts = tileStarts(for: width)
-        let yStarts = tileStarts(for: height)
+        let overlap = effectiveTileOverlap
+        let outOverlap = overlap * scale
+        let xStarts = tileStarts(for: width, overlap: overlap)
+        let yStarts = tileStarts(for: height, overlap: overlap)
 
         let preparationStart = DispatchTime.now().uptimeNanoseconds
         let expandedImage = image.expand(
             shrinkSize: 0,
-            preserveGrayscale: preserveGrayscale
+            preserveGrayscale: effectivePreserveGrayscale
         )
         let source = expandedImage.pixels
         let preparationMilliseconds = Self.elapsedMilliseconds(since: preparationStart)
@@ -379,14 +405,15 @@ class MultiArrayModel: ImageProcessingModel {
         }
         let grayscaleMilliseconds = Self.elapsedMilliseconds(since: grayscaleStart)
         let snapshot = metrics.snapshot()
+        let output = makeImage(from: &imageData, width: outWidth, height: outHeight)
         LogManager.logger.info(
             "[UPSCALE-PERF] mode=overlap size=\(width)x\(height) tiles=\(xStarts.count * yStarts.count) "
-                + "overlap=\(tileOverlap) grayscale=\(preserveGrayscale) preparation_ms=\(preparationMilliseconds) "
+                + "overlap=\(overlap) grayscale=\(effectivePreserveGrayscale) benchmark=\(benchmarkMode) preparation_ms=\(preparationMilliseconds) "
                 + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
                 + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart))"
         )
 
-        return makeImage(from: &imageData, width: outWidth, height: outHeight)
+        return output
     }
 
     private static func elapsedMilliseconds(since start: UInt64) -> Double {
@@ -459,8 +486,8 @@ class MultiArrayModel: ImageProcessingModel {
         }
     }
 
-    private func tileStarts(for length: Int) -> [Int] {
-        let stride = blockSize - tileOverlap
+    private func tileStarts(for length: Int, overlap: Int) -> [Int] {
+        let stride = blockSize - overlap
         var result = [0]
         while let last = result.last, last + blockSize < length {
             result.append(last + stride)

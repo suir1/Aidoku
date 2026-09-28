@@ -22,6 +22,7 @@ struct ReaderSettingsView: View {
     @StateObject private var downsampleImages = UserDefaultsBool(key: "Reader.downsampleImages")
     @StateObject private var upscaleImages = UserDefaultsBool(key: "Reader.upscaleImages")
     @StateObject private var splitWideImages = UserDefaultsBool(key: "Reader.splitWideImages")
+    @State private var upscaleBenchmarkMode: String
     @StateObject private var dictionaryLookupEnabled = UserDefaultsBool(key: AppSettings.dictionary.enable.key)
     @StateObject private var dictionaryTextOverlayModeEnabled = UserDefaultsBool(key: AppSettings.dictionary.textOverlayMode.key)
     @StateObject private var restrictOCRLanguages = UserDefaultsBool(key: AppSettings.dictionary.restrictOCRLanguages.key)
@@ -55,6 +56,9 @@ struct ReaderSettingsView: View {
         )
         self._lookupGestureLocksDoubleTap = State(
             initialValue: Self.lookupGestureLocksDoubleTap(chapterLanguage: chapterLanguage)
+        )
+        self._upscaleBenchmarkMode = State(
+            initialValue: UserDefaults.standard.string(forKey: "Reader.upscaleBenchmarkMode") ?? "auto"
         )
     }
 
@@ -123,6 +127,16 @@ struct ReaderSettingsView: View {
                                         ))
                                     )
                                 )
+                                Picker(NSLocalizedString("UPSCALE_BENCHMARK_MODE"), selection: $upscaleBenchmarkMode) {
+                                    Text(NSLocalizedString("UPSCALE_BENCHMARK_AUTO")).tag("auto")
+                                    Text(NSLocalizedString("UPSCALE_BENCHMARK_BASELINE")).tag("baseline")
+                                    Text(NSLocalizedString("UPSCALE_BENCHMARK_OVERLAP")).tag("overlap")
+                                    Text(NSLocalizedString("UPSCALE_BENCHMARK_GRAYSCALE")).tag("grayscale")
+                                    Text(NSLocalizedString("UPSCALE_BENCHMARK_BOTH")).tag("both")
+                                }
+                                .onChange(of: upscaleBenchmarkMode) { newValue in
+                                    UserDefaults.standard.set(newValue, forKey: "Reader.upscaleBenchmarkMode")
+                                }
                             }
                         } header: {
                             Text(NSLocalizedString("UPSCALING"))

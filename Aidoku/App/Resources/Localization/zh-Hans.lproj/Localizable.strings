@@ -509,6 +509,12 @@
 "NO_AVAILABLE_MODELS_TEXT" = "获取可用模型失败。请检查网络连接并确保您的应用运行最新版本。";
 "MODEL_INFO" = "模型信息";
 "UPSCALING" = "超分辨率";
+"UPSCALE_BENCHMARK_MODE" = "超分辨率测试模式";
+"UPSCALE_BENCHMARK_AUTO" = "模型默认";
+"UPSCALE_BENCHMARK_BASELINE" = "基线（无重叠/灰度保护）";
+"UPSCALE_BENCHMARK_OVERLAP" = "仅重叠羽化";
+"UPSCALE_BENCHMARK_GRAYSCALE" = "仅灰度保护";
+"UPSCALE_BENCHMARK_BOTH" = "重叠羽化 + 灰度保护";
 "RELOAD_FAILED_TEXT" = "图片加载失败。请重试。";
 "RELOAD_FAILED" = "重新加载失败";
 "NO_DOWNLOADS" = "无下载内容";
