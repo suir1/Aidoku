@@ -12,6 +12,8 @@
 
 import Accelerate
 import CoreML
+import Darwin
+import Foundation
 import MetalKit
 
 class MultiArrayModel: ImageProcessingModel {
@@ -75,6 +77,7 @@ class MultiArrayModel: ImageProcessingModel {
         }
 
         let processStart = DispatchTime.now().uptimeNanoseconds
+        let memoryMetrics = MemoryMetrics()
         let width = image.width
         let height = image.height
         let channels = 4
@@ -91,6 +94,7 @@ class MultiArrayModel: ImageProcessingModel {
         var bufferPool: [MLMultiArray] = (0..<poolSize).compactMap { _ in
             try? MLMultiArray(shape: shape, dataType: .float32)
         }
+        memoryMetrics.sample()
         let bufferSemaphore = DispatchSemaphore(value: poolSize)
         let bufferPoolLock = NSLock()
 
@@ -119,6 +123,7 @@ class MultiArrayModel: ImageProcessingModel {
         )
         let expanded = expandedImage.pixels
         let preparationMilliseconds = Self.elapsedMilliseconds(since: preparationStart)
+        memoryMetrics.sample()
         let metrics = PerformanceMetrics()
 
         // calculate image block rects
@@ -214,6 +219,7 @@ class MultiArrayModel: ImageProcessingModel {
                 }
             }
         }
+        memoryMetrics.sample()
 
         let grayscaleStart = DispatchTime.now().uptimeNanoseconds
         if let grayscaleMask = expandedImage.grayscaleMask {
@@ -227,11 +233,13 @@ class MultiArrayModel: ImageProcessingModel {
         let grayscaleMilliseconds = Self.elapsedMilliseconds(since: grayscaleStart)
         let snapshot = metrics.snapshot()
         let output = makeImage(from: &imgData, width: outWidth, height: outHeight)
+        memoryMetrics.sample()
         LogManager.logger.info(
             "[UPSCALE-PERF] mode=independent size=\(width)x\(height) tiles=\(rects.count) "
                 + "overlap=0 grayscale=\(effectivePreserveGrayscale) benchmark=\(benchmarkMode) preparation_ms=\(preparationMilliseconds) "
                 + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
-                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart))"
+                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart)) "
+                + memoryMetrics.logFields()
         )
 
         return output
@@ -240,6 +248,7 @@ class MultiArrayModel: ImageProcessingModel {
     // process overlapping tiles one row at a time to bound intermediate memory
     private func processOverlapping(_ image: CGImage) async -> CGImage? {
         let processStart = DispatchTime.now().uptimeNanoseconds
+        let memoryMetrics = MemoryMetrics()
         let width = image.width
         let height = image.height
         let outWidth = width * scale
@@ -286,6 +295,7 @@ class MultiArrayModel: ImageProcessingModel {
         var multiplied = [Float32](repeating: 0, count: predictionChannelStride)
         var clipped = [Float32](repeating: 0, count: predictionChannelStride)
         let metrics = PerformanceMetrics()
+        memoryMetrics.sample()
 
         for (rowIndex, originY) in yStarts.enumerated() {
             let inputHeight = min(blockSize, height - originY)
@@ -365,6 +375,8 @@ class MultiArrayModel: ImageProcessingModel {
                 }
             }
 
+            memoryMetrics.sample()
+
             let destinationOriginY = originY * scale
             for outputY in 0..<outputHeight {
                 let destinationY = destinationOriginY + outputY
@@ -406,11 +418,13 @@ class MultiArrayModel: ImageProcessingModel {
         let grayscaleMilliseconds = Self.elapsedMilliseconds(since: grayscaleStart)
         let snapshot = metrics.snapshot()
         let output = makeImage(from: &imageData, width: outWidth, height: outHeight)
+        memoryMetrics.sample()
         LogManager.logger.info(
             "[UPSCALE-PERF] mode=overlap size=\(width)x\(height) tiles=\(xStarts.count * yStarts.count) "
                 + "overlap=\(overlap) grayscale=\(effectivePreserveGrayscale) benchmark=\(benchmarkMode) preparation_ms=\(preparationMilliseconds) "
                 + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
-                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart))"
+                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart)) "
+                + memoryMetrics.logFields()
         )
 
         return output
@@ -418,6 +432,24 @@ class MultiArrayModel: ImageProcessingModel {
 
     private static func elapsedMilliseconds(since start: UInt64) -> Double {
         Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+    }
+
+    fileprivate static func residentMemoryBytes() -> UInt64? {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<mach_task_basic_info>.size / MemoryLayout<integer_t>.size
+        )
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { pointer in
+                task_info(
+                    mach_task_self_,
+                    task_flavor_t(MACH_TASK_BASIC_INFO),
+                    pointer,
+                    &count
+                )
+            }
+        }
+        return result == KERN_SUCCESS ? UInt64(info.resident_size) : nil
     }
 
     private func makeImage(from data: inout [UInt8], width: Int, height: Int) -> CGImage? {
@@ -554,6 +586,41 @@ private final class PerformanceMetrics: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return (predictionMilliseconds, predictionCalls)
+    }
+}
+
+private final class MemoryMetrics {
+    private let startBytes: UInt64?
+    private var peakBytes: UInt64?
+    private var endBytes: UInt64?
+
+    init() {
+        let bytes = MultiArrayModel.residentMemoryBytes()
+        startBytes = bytes
+        peakBytes = bytes
+    }
+
+    func sample() {
+        let bytes = MultiArrayModel.residentMemoryBytes()
+        endBytes = bytes
+        if let bytes, bytes > (peakBytes ?? 0) {
+            peakBytes = bytes
+        }
+    }
+
+    func logFields() -> String {
+        guard let startBytes, let peakBytes, let endBytes else {
+            return "memory_mb=unavailable"
+        }
+        let megabyte = 1024.0 * 1024.0
+        let delta = Double(endBytes) - Double(startBytes)
+        return String(
+            format: "memory_before_mb=%.1f memory_peak_mb=%.1f memory_after_mb=%.1f memory_delta_mb=%.1f",
+            Double(startBytes) / megabyte,
+            Double(peakBytes) / megabyte,
+            Double(endBytes) / megabyte,
+            delta / megabyte
+        )
     }
 }
 
