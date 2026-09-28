@@ -50,6 +50,7 @@ class MultiArrayModel: ImageProcessingModel {
             return await processOverlapping(image)
         }
 
+        let processStart = DispatchTime.now().uptimeNanoseconds
         let width = image.width
         let height = image.height
         let channels = 4
@@ -87,11 +88,14 @@ class MultiArrayModel: ImageProcessingModel {
         // expand image by the shrink size
         let expwidth = Int(image.width) + 2 * shrinkSize
         let expheight = Int(image.height) + 2 * shrinkSize
+        let preparationStart = DispatchTime.now().uptimeNanoseconds
         let expandedImage = image.expand(
             shrinkSize: shrinkSize,
             preserveGrayscale: preserveGrayscale
         )
         let expanded = expandedImage.pixels
+        let preparationMilliseconds = elapsedMilliseconds(since: preparationStart)
+        let metrics = PerformanceMetrics()
 
         // calculate image block rects
         let rects = calculateRects(width: width, height: height, blockSize: blockSize)
@@ -133,11 +137,13 @@ class MultiArrayModel: ImageProcessingModel {
             Task.detached {
                 for await (i, multi) in multiArrayStream {
                     var buffer = multi
+                    let predictionStart = DispatchTime.now().uptimeNanoseconds
                     if let prediction = try? self.mlmodel.prediction(inputName: inputName, outputName: outputName, input: buffer) {
                         buffer = prediction
                     } else {
                         LogManager.logger.error("Failed to get output from multiarray model")
                     }
+                    metrics.recordPrediction(elapsedMilliseconds(since: predictionStart))
                     continuation.yield((i, buffer))
                     returnBuffer(multi)
                 }
@@ -185,6 +191,7 @@ class MultiArrayModel: ImageProcessingModel {
             }
         }
 
+        let grayscaleStart = DispatchTime.now().uptimeNanoseconds
         if let grayscaleMask = expandedImage.grayscaleMask {
             applyGrayscale(
                 to: &imgData,
@@ -193,12 +200,21 @@ class MultiArrayModel: ImageProcessingModel {
                 scale: outScale
             )
         }
+        let grayscaleMilliseconds = elapsedMilliseconds(since: grayscaleStart)
+        let snapshot = metrics.snapshot()
+        LogManager.logger.info(
+            "[UPSCALE-PERF] mode=independent size=\(width)x\(height) tiles=\(rects.count) "
+                + "overlap=0 grayscale=\(preserveGrayscale) preparation_ms=\(preparationMilliseconds) "
+                + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
+                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(elapsedMilliseconds(since: processStart))"
+        )
 
         return makeImage(from: &imgData, width: outWidth, height: outHeight)
     }
 
     // process overlapping tiles one row at a time to bound intermediate memory
     private func processOverlapping(_ image: CGImage) async -> CGImage? {
+        let processStart = DispatchTime.now().uptimeNanoseconds
         let width = image.width
         let height = image.height
         let outWidth = width * scale
@@ -208,11 +224,13 @@ class MultiArrayModel: ImageProcessingModel {
         let xStarts = tileStarts(for: width)
         let yStarts = tileStarts(for: height)
 
+        let preparationStart = DispatchTime.now().uptimeNanoseconds
         let expandedImage = image.expand(
             shrinkSize: 0,
             preserveGrayscale: preserveGrayscale
         )
         let source = expandedImage.pixels
+        let preparationMilliseconds = elapsedMilliseconds(since: preparationStart)
         let channels = 4
         let sourceChannelStride = width * height
         let inputChannelStride = blockSize * blockSize
@@ -241,6 +259,7 @@ class MultiArrayModel: ImageProcessingModel {
         var channelData = [UInt8](repeating: 0, count: predictionChannelStride)
         var multiplied = [Float32](repeating: 0, count: predictionChannelStride)
         var clipped = [Float32](repeating: 0, count: predictionChannelStride)
+        let metrics = PerformanceMetrics()
 
         for (rowIndex, originY) in yStarts.enumerated() {
             let inputHeight = min(blockSize, height - originY)
@@ -265,6 +284,7 @@ class MultiArrayModel: ImageProcessingModel {
                 }
 
                 let prediction: MLMultiArray
+                let predictionStart = DispatchTime.now().uptimeNanoseconds
                 do {
                     guard let output = try mlmodel.prediction(
                         inputName: inputName,
@@ -280,6 +300,7 @@ class MultiArrayModel: ImageProcessingModel {
                     LogManager.logger.error("Failed to get output from multiarray model: \(error)")
                     return nil
                 }
+                metrics.recordPrediction(elapsedMilliseconds(since: predictionStart))
 
                 let outputWidth = min(blockSize, width - originX) * scale
                 guard prediction.count >= predictionChannelStride * 3 else {
@@ -347,6 +368,7 @@ class MultiArrayModel: ImageProcessingModel {
             }
         }
 
+        let grayscaleStart = DispatchTime.now().uptimeNanoseconds
         if let grayscaleMask = expandedImage.grayscaleMask {
             applyGrayscale(
                 to: &imageData,
@@ -355,8 +377,20 @@ class MultiArrayModel: ImageProcessingModel {
                 scale: scale
             )
         }
+        let grayscaleMilliseconds = elapsedMilliseconds(since: grayscaleStart)
+        let snapshot = metrics.snapshot()
+        LogManager.logger.info(
+            "[UPSCALE-PERF] mode=overlap size=\(width)x\(height) tiles=\(xStarts.count * yStarts.count) "
+                + "overlap=\(tileOverlap) grayscale=\(preserveGrayscale) preparation_ms=\(preparationMilliseconds) "
+                + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
+                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(elapsedMilliseconds(since: processStart))"
+        )
 
         return makeImage(from: &imageData, width: outWidth, height: outHeight)
+    }
+
+    private func elapsedMilliseconds(since start: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
     }
 
     private func makeImage(from data: inout [UInt8], width: Int, height: Int) -> CGImage? {
@@ -474,6 +508,25 @@ class MultiArrayModel: ImageProcessingModel {
             rects.append(CGRect(x: width - blockSize, y: height - blockSize, width: blockSize, height: blockSize))
         }
         return rects
+    }
+}
+
+private final class PerformanceMetrics: @unchecked Sendable {
+    private let lock = NSLock()
+    private var predictionMilliseconds = 0.0
+    private var predictionCalls = 0
+
+    func recordPrediction(_ milliseconds: Double) {
+        lock.lock()
+        predictionMilliseconds += milliseconds
+        predictionCalls += 1
+        lock.unlock()
+    }
+
+    func snapshot() -> (milliseconds: Double, calls: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (predictionMilliseconds, predictionCalls)
     }
 }
 
