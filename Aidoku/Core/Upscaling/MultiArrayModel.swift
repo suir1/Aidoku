@@ -94,7 +94,7 @@ class MultiArrayModel: ImageProcessingModel {
             preserveGrayscale: preserveGrayscale
         )
         let expanded = expandedImage.pixels
-        let preparationMilliseconds = elapsedMilliseconds(since: preparationStart)
+        let preparationMilliseconds = Self.elapsedMilliseconds(since: preparationStart)
         let metrics = PerformanceMetrics()
 
         // calculate image block rects
@@ -143,7 +143,7 @@ class MultiArrayModel: ImageProcessingModel {
                     } else {
                         LogManager.logger.error("Failed to get output from multiarray model")
                     }
-                    metrics.recordPrediction(elapsedMilliseconds(since: predictionStart))
+                    metrics.recordPrediction(Self.elapsedMilliseconds(since: predictionStart))
                     continuation.yield((i, buffer))
                     returnBuffer(multi)
                 }
@@ -200,13 +200,13 @@ class MultiArrayModel: ImageProcessingModel {
                 scale: outScale
             )
         }
-        let grayscaleMilliseconds = elapsedMilliseconds(since: grayscaleStart)
+        let grayscaleMilliseconds = Self.elapsedMilliseconds(since: grayscaleStart)
         let snapshot = metrics.snapshot()
         LogManager.logger.info(
             "[UPSCALE-PERF] mode=independent size=\(width)x\(height) tiles=\(rects.count) "
                 + "overlap=0 grayscale=\(preserveGrayscale) preparation_ms=\(preparationMilliseconds) "
                 + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
-                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(elapsedMilliseconds(since: processStart))"
+                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart))"
         )
 
         return makeImage(from: &imgData, width: outWidth, height: outHeight)
@@ -230,7 +230,7 @@ class MultiArrayModel: ImageProcessingModel {
             preserveGrayscale: preserveGrayscale
         )
         let source = expandedImage.pixels
-        let preparationMilliseconds = elapsedMilliseconds(since: preparationStart)
+        let preparationMilliseconds = Self.elapsedMilliseconds(since: preparationStart)
         let channels = 4
         let sourceChannelStride = width * height
         let inputChannelStride = blockSize * blockSize
@@ -300,7 +300,7 @@ class MultiArrayModel: ImageProcessingModel {
                     LogManager.logger.error("Failed to get output from multiarray model: \(error)")
                     return nil
                 }
-                metrics.recordPrediction(elapsedMilliseconds(since: predictionStart))
+                metrics.recordPrediction(Self.elapsedMilliseconds(since: predictionStart))
 
                 let outputWidth = min(blockSize, width - originX) * scale
                 guard prediction.count >= predictionChannelStride * 3 else {
@@ -377,19 +377,19 @@ class MultiArrayModel: ImageProcessingModel {
                 scale: scale
             )
         }
-        let grayscaleMilliseconds = elapsedMilliseconds(since: grayscaleStart)
+        let grayscaleMilliseconds = Self.elapsedMilliseconds(since: grayscaleStart)
         let snapshot = metrics.snapshot()
         LogManager.logger.info(
             "[UPSCALE-PERF] mode=overlap size=\(width)x\(height) tiles=\(xStarts.count * yStarts.count) "
                 + "overlap=\(tileOverlap) grayscale=\(preserveGrayscale) preparation_ms=\(preparationMilliseconds) "
                 + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
-                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(elapsedMilliseconds(since: processStart))"
+                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart))"
         )
 
         return makeImage(from: &imageData, width: outWidth, height: outHeight)
     }
 
-    private func elapsedMilliseconds(since start: UInt64) -> Double {
+    private static func elapsedMilliseconds(since start: UInt64) -> Double {
         Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
     }
 
