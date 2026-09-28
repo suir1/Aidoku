@@ -130,6 +130,7 @@ class MultiArrayModel: ImageProcessingModel {
             preserveGrayscale: preserveGrayscale
         )
         let expanded = expandedImage.pixels
+        let grayscaleDetectionMilliseconds = expandedImage.grayscaleDetectionMilliseconds
         let preparationMilliseconds = Self.elapsedMilliseconds(since: preparationStart)
         memoryMetrics.sample()
         let metrics = PerformanceMetrics()
@@ -246,7 +247,7 @@ class MultiArrayModel: ImageProcessingModel {
             "[UPSCALE-PERF] mode=independent size=\(width)x\(height) tiles=\(rects.count) "
                 + "overlap=0 grayscale=\(preserveGrayscale) benchmark=\(selectedBenchmarkMode) preparation_ms=\(preparationMilliseconds) "
                 + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
-                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart)) "
+                + "grayscale_detect_ms=\(grayscaleDetectionMilliseconds) grayscale_ms=\(grayscaleMilliseconds) blend_ms=0 total_ms=\(Self.elapsedMilliseconds(since: processStart)) "
                 + memoryMetrics.logFields()
         )
 
@@ -277,6 +278,7 @@ class MultiArrayModel: ImageProcessingModel {
             preserveGrayscale: preserveGrayscale
         )
         let source = expandedImage.pixels
+        let grayscaleDetectionMilliseconds = expandedImage.grayscaleDetectionMilliseconds
         let preparationMilliseconds = Self.elapsedMilliseconds(since: preparationStart)
         let channels = 4
         let sourceChannelStride = width * height
@@ -308,6 +310,7 @@ class MultiArrayModel: ImageProcessingModel {
         var clipped = [Float32](repeating: 0, count: predictionChannelStride)
         let metrics = PerformanceMetrics()
         memoryMetrics.sample()
+        var blendNanoseconds: UInt64 = 0
 
         for (rowIndex, originY) in yStarts.enumerated() {
             let inputHeight = min(blockSize, height - originY)
@@ -365,6 +368,7 @@ class MultiArrayModel: ImageProcessingModel {
                         multiplied: &multiplied,
                         clipped: &clipped
                     )
+                    let blendStart = columnIndex > 0 ? DispatchTime.now().uptimeNanoseconds : 0
 
                     for outputY in 0..<outputHeight {
                         let sourceRow = outputY * outTileSize
@@ -384,6 +388,9 @@ class MultiArrayModel: ImageProcessingModel {
                             }
                         }
                     }
+                    if columnIndex > 0 {
+                        blendNanoseconds += DispatchTime.now().uptimeNanoseconds - blendStart
+                    }
                 }
             }
 
@@ -396,6 +403,7 @@ class MultiArrayModel: ImageProcessingModel {
                 let imageDestinationOffset = destinationY * outWidth * channels
                 if rowIndex > 0 && outputY < outOverlap {
                     let weight = ramp[outputY]
+                    let blendStart = DispatchTime.now().uptimeNanoseconds
                     for pixel in 0..<outWidth {
                         let sourcePixel = rowSourceOffset + pixel * channels
                         let destinationPixel = imageDestinationOffset + pixel * channels
@@ -409,6 +417,7 @@ class MultiArrayModel: ImageProcessingModel {
                             )
                         }
                     }
+                    blendNanoseconds += DispatchTime.now().uptimeNanoseconds - blendStart
                 } else {
                     imageData.replaceSubrange(
                         imageDestinationOffset..<(imageDestinationOffset + outWidth * channels),
@@ -435,7 +444,8 @@ class MultiArrayModel: ImageProcessingModel {
             "[UPSCALE-PERF] mode=overlap size=\(width)x\(height) tiles=\(xStarts.count * yStarts.count) "
                 + "overlap=\(overlap) grayscale=\(preserveGrayscale) benchmark=\(benchmarkMode) preparation_ms=\(preparationMilliseconds) "
                 + "inference_ms=\(snapshot.milliseconds) inference_calls=\(snapshot.calls) "
-                + "grayscale_ms=\(grayscaleMilliseconds) total_ms=\(Self.elapsedMilliseconds(since: processStart)) "
+                + "grayscale_detect_ms=\(grayscaleDetectionMilliseconds) grayscale_ms=\(grayscaleMilliseconds) "
+                + "blend_ms=\(Double(blendNanoseconds) / 1_000_000) total_ms=\(Self.elapsedMilliseconds(since: processStart)) "
                 + memoryMetrics.logFields()
         )
 
@@ -665,7 +675,11 @@ private extension MLModel {
 
 private extension CGImage {
     // expands image by shrinkSize and returns rgb float array
-    func expand(shrinkSize: Int, preserveGrayscale: Bool) -> (pixels: [Float], grayscaleMask: [UInt8]?) {
+    func expand(shrinkSize: Int, preserveGrayscale: Bool) -> (
+        pixels: [Float],
+        grayscaleMask: [UInt8]?,
+        grayscaleDetectionMilliseconds: Double
+    ) {
         let clipEta8: Float = 0.00196078411
 
         let exwidth = width + 2 * shrinkSize
@@ -702,7 +716,9 @@ private extension CGImage {
 
         var arr = [Float](repeating: 0, count: 3 * exwidth * exheight)
         var grayscaleMask: [UInt8]?
+        var grayscaleDetectionMilliseconds = 0.0
         if preserveGrayscale {
+            let grayscaleDetectionStart = DispatchTime.now().uptimeNanoseconds
             var mask = [UInt8](repeating: 0, count: width * height)
             for index in mask.indices {
                 let offset = index * 4
@@ -712,6 +728,9 @@ private extension CGImage {
                 mask[index] = max(red, max(green, blue)) - min(red, min(green, blue)) <= 2 ? 1 : 0
             }
             grayscaleMask = mask
+            grayscaleDetectionMilliseconds = Double(
+                DispatchTime.now().uptimeNanoseconds - grayscaleDetectionStart
+            ) / 1_000_000
         }
 
         // Models without a shrink border can be decoded directly into the
@@ -746,7 +765,11 @@ private extension CGImage {
                 }
             }
 
-            return (pixels: arr, grayscaleMask: grayscaleMask)
+            return (
+                pixels: arr,
+                grayscaleMask: grayscaleMask,
+                grayscaleDetectionMilliseconds: grayscaleDetectionMilliseconds
+            )
         }
 
         var rArr = [Float](repeating: 0, count: mainW * mainH)
@@ -929,6 +952,10 @@ private extension CGImage {
             )
         }
 
-        return (pixels: arr, grayscaleMask: grayscaleMask)
+        return (
+            pixels: arr,
+            grayscaleMask: grayscaleMask,
+            grayscaleDetectionMilliseconds: grayscaleDetectionMilliseconds
+        )
     }
 }
