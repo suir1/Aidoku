@@ -136,6 +136,10 @@ struct ReaderSettingsView: View {
                                 }
                                 .onChange(of: upscaleBenchmarkMode) { newValue in
                                     UserDefaults.standard.set(newValue, forKey: "Reader.upscaleBenchmarkMode")
+                                    NotificationCenter.default.post(
+                                        name: Notification.Name("Reader.upscaleBenchmarkMode"),
+                                        object: nil
+                                    )
                                 }
                             }
                         } header: {
